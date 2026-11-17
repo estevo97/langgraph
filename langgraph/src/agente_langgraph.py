@@ -2,6 +2,7 @@
 from dotenv import load_dotenv
 import os 
 import os
+from pathlib import Path
 from typing import TypedDict, Annotated
 from dotenv import load_dotenv
 
@@ -60,10 +61,17 @@ def nodo_enrutador(state: AgentState):
         "responde: listar_documentos\n"
         "Si el usuario pide clasificar u organizar los documentos pendientes "
         "de recepción, responde: clasificar_documentos\n"
+        "Si el usuario pide copiar un archivo a recepción, "
+        "responde: copiar_archivos\n"
+        "Si el usuario pide leer un archivo de recepción, "
+        "responde: leer_archivo\n"
+        "Si el usuario pide guardar un texto en recepción, "
+        "responde: guardar_texto\n"
         "Si el usuario hace preguntas científicas, responde: cientifico\n"
-        "Responde ÚNICAMENTE con una de estas cinco opciones: "
+        "Responde ÚNICAMENTE con una de estas ocho opciones: "
         "matematico, poeta, listar_documentos, "
-        "clasificar_documentos o cientifico.\n"
+        "clasificar_documentos, copiar_archivos, leer_archivo, "
+        "guardar_texto o cientifico.\n"
         "En minúsculas y sin puntuación.\n"
         f"Mensaje: {mensaje_usuario}"
     )
@@ -93,6 +101,12 @@ def nodo_enrutador(state: AgentState):
         destino = "listar_documentos"
     elif "clasificar_documentos" in destino:
         destino = "clasificar_documentos"
+    elif "copiar_archivos" in destino:
+        destino = "copiar_archivos"
+    elif "leer_archivo" in destino:
+        destino = "leer_archivo"
+    elif "guardar_texto" in destino:
+        destino = "guardar_texto"
     elif "poeta" in destino:
         destino = "poeta"
     elif "cientifico" in destino:
@@ -318,6 +332,223 @@ async def nodo_clasificar_documentos(state: AgentState):
         ]
     }
 
+
+async def nodo_copiar_archivos(state: AgentState):
+    """Copia a recepción el archivo indicado por el usuario."""
+
+    mensaje_usuario = state["messages"][-1].content
+    prompt = (
+        "Extrae del mensaje del usuario el nombre exacto del archivo que "
+        "quiere copiar a recepción. Devuelve solo el nombre base del archivo, "
+        "sin ruta ni explicaciones. No inventes nombres. Si no se indica "
+        "claramente un nombre de archivo, devuelve exactamente "
+        "NO_ESPECIFICADO.\n"
+        f"Mensaje: {mensaje_usuario}"
+    )
+    contenido_nombre = llm.invoke(prompt).content
+
+    if isinstance(contenido_nombre, list):
+        nombre_archivo = next(
+            (
+                bloque["text"]
+                for bloque in contenido_nombre
+                if isinstance(bloque, dict)
+                and isinstance(bloque.get("text"), str)
+            ),
+            "",
+        )
+    else:
+        nombre_archivo = str(contenido_nombre)
+
+    nombre_archivo = nombre_archivo.strip().strip("\"'`")
+    if not nombre_archivo or nombre_archivo.upper() == "NO_ESPECIFICADO":
+        return {
+            "messages": [
+                AIMessage(
+                    content="Indica el nombre exacto del archivo que quieres copiar."
+                )
+            ]
+        }
+
+    if (
+        nombre_archivo in {".", ".."}
+        or Path(nombre_archivo).name != nombre_archivo
+    ):
+        return {
+            "messages": [
+                AIMessage(
+                    content="Indica solo el nombre del archivo, sin incluir su ruta."
+                )
+            ]
+        }
+
+    resultado = await ejecutar_herramienta_mcp(
+        "copiar_archivo",
+        {"nombre_archivo": nombre_archivo}
+    )
+
+    if isinstance(resultado, list):
+        respuesta = "\n".join(
+            bloque["text"]
+            for bloque in resultado
+            if isinstance(bloque, dict)
+            and bloque.get("type") == "text"
+            and isinstance(bloque.get("text"), str)
+        )
+    else:
+        respuesta = str(resultado)
+
+    return {"messages": [AIMessage(content=respuesta or str(resultado))]}
+
+
+async def nodo_leer_archivo(state: AgentState):
+    """Lee y devuelve al usuario el contenido de un archivo en recepción."""
+
+    mensaje_usuario = state["messages"][-1].content
+    prompt = (
+        "Extrae del mensaje del usuario el nombre exacto del archivo que "
+        "quiere leer en recepción. Devuelve solo el nombre base del archivo, "
+        "sin ruta ni explicaciones. No inventes nombres. Si no se indica "
+        "claramente un nombre de archivo, devuelve exactamente "
+        "NO_ESPECIFICADO.\n"
+        f"Mensaje: {mensaje_usuario}"
+    )
+    contenido_nombre = llm.invoke(prompt).content
+
+    if isinstance(contenido_nombre, list):
+        nombre_archivo = next(
+            (
+                bloque["text"]
+                for bloque in contenido_nombre
+                if isinstance(bloque, dict)
+                and isinstance(bloque.get("text"), str)
+            ),
+            "",
+        )
+    else:
+        nombre_archivo = str(contenido_nombre)
+
+    nombre_archivo = nombre_archivo.strip().strip("\"'`")
+    if not nombre_archivo or nombre_archivo.upper() == "NO_ESPECIFICADO":
+        return {
+            "messages": [
+                AIMessage(content="Indica el nombre exacto del archivo que quieres leer.")
+            ]
+        }
+
+    if (
+        nombre_archivo in {".", ".."}
+        or Path(nombre_archivo).name != nombre_archivo
+    ):
+        return {
+            "messages": [
+                AIMessage(
+                    content="Indica solo el nombre del archivo, sin incluir su ruta."
+                )
+            ]
+        }
+
+    resultado = await ejecutar_herramienta_mcp(
+        "leer_archivo",
+        {"nombre_archivo": nombre_archivo}
+    )
+
+    if isinstance(resultado, list):
+        contenido = "\n".join(
+            bloque["text"]
+            for bloque in resultado
+            if isinstance(bloque, dict)
+            and bloque.get("type") == "text"
+            and isinstance(bloque.get("text"), str)
+        )
+    else:
+        contenido = str(resultado)
+
+    return {
+        "messages": [
+            AIMessage(content=f"Contenido de {nombre_archivo}:\n{contenido}")
+        ]
+    }
+
+
+async def nodo_guardar_texto(state: AgentState):
+    """Guarda en recepción el texto incluido en el mensaje del usuario."""
+
+    mensaje_usuario = state["messages"][-1].content
+    prefijo, separador, contenido = mensaje_usuario.partition(":")
+
+    if not separador:
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "Indica el nombre y el texto con este formato: "
+                        "Guardar texto archivo.txt: contenido"
+                    )
+                )
+            ]
+        }
+
+    partes_prefijo = prefijo.strip().split()
+    if len(partes_prefijo) < 3:
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "Indica el nombre del archivo antes de los dos puntos. "
+                        "Ejemplo: Guardar texto archivo.txt: contenido"
+                    )
+                )
+            ]
+        }
+
+    nombre_archivo = partes_prefijo[-1].strip("\"'`")
+    if (
+        not nombre_archivo
+        or nombre_archivo in {".", ".."}
+        or Path(nombre_archivo).name != nombre_archivo
+    ):
+        return {
+            "messages": [
+                AIMessage(
+                    content="Indica solo el nombre del archivo, sin incluir su ruta."
+                )
+            ]
+        }
+
+    if contenido.startswith(" "):
+        contenido = contenido[1:]
+    if not contenido.strip():
+        return {
+            "messages": [
+                AIMessage(
+                    content="Incluye el texto que quieres guardar después de los dos puntos."
+                )
+            ]
+        }
+
+    resultado = await ejecutar_herramienta_mcp(
+        "guardar_texto",
+        {
+            "nombre_archivo": nombre_archivo,
+            "contenido": contenido
+        }
+    )
+
+    if isinstance(resultado, list):
+        respuesta = "\n".join(
+            bloque["text"]
+            for bloque in resultado
+            if isinstance(bloque, dict)
+            and bloque.get("type") == "text"
+            and isinstance(bloque.get("text"), str)
+        )
+    else:
+        respuesta = str(resultado)
+
+    return {"messages": [AIMessage(content=respuesta or str(resultado))]}
+
+
 #  CONSTRUCCIÓN DEL GRAFO
 
 grafo = StateGraph(AgentState)
@@ -328,6 +559,9 @@ grafo.add_node("poeta", nodo_poeta)
 grafo.add_node("cientifico", nodo_cientifico)
 grafo.add_node("listar_documentos", nodo_listar_documentos)
 grafo.add_node("clasificar_documentos", nodo_clasificar_documentos)
+grafo.add_node("copiar_archivos", nodo_copiar_archivos)
+grafo.add_node("leer_archivo", nodo_leer_archivo)
+grafo.add_node("guardar_texto", nodo_guardar_texto)
 grafo.add_edge(START, "enrutador")
 
 def leer_decision(state: AgentState):
@@ -341,6 +575,9 @@ grafo.add_conditional_edges(
         "cientifico": "cientifico",
         "listar_documentos": "listar_documentos",
         "clasificar_documentos": "clasificar_documentos",
+        "copiar_archivos": "copiar_archivos",
+        "leer_archivo": "leer_archivo",
+        "guardar_texto": "guardar_texto",
         "poeta": "poeta"
     }
 )
@@ -350,6 +587,9 @@ grafo.add_edge("poeta", END)
 grafo.add_edge("cientifico", END)
 grafo.add_edge("listar_documentos", END)
 grafo.add_edge("clasificar_documentos", END)
+grafo.add_edge("copiar_archivos", END)
+grafo.add_edge("leer_archivo", END)
+grafo.add_edge("guardar_texto", END)
 
 app = grafo.compile()
 
@@ -369,8 +609,15 @@ async def hacer_pregunta(texto):
     print(f"Respuesta Final:\n{respuesta_final['messages'][-1].content}")
 
 
+async def main():
+    while True:
+        texto = input("Usuario (o 'salir' para terminar): ").strip()
+        if texto.lower() == "salir":
+            break
+        if texto:
+            await hacer_pregunta(texto)
+
+
 if __name__ == "__main__":
-    asyncio.run(
-        hacer_pregunta("Clasifica los documentos pendientes de recepción")
-    )
+    asyncio.run(main())
 
